@@ -1,5 +1,8 @@
 //! All interaction with the `tmux` binary, plus pure parsing of its output.
 
+use anyhow::{anyhow, Context, Result};
+use std::process::Command;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub name: String,
@@ -65,9 +68,116 @@ pub fn build_sessions(sessions_out: &str, windows_out: &str) -> Vec<Session> {
     sessions
 }
 
+/// Abstraction over running `tmux` subcommands, so parsing is testable
+/// without a real tmux server.
+pub trait CommandRunner {
+    fn run(&self, args: &[&str]) -> Result<String>;
+}
+
+/// The real runner: shells out to the `tmux` binary on PATH.
+pub struct TmuxCli;
+
+impl CommandRunner for TmuxCli {
+    fn run(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .context("failed to run tmux; is it installed and on PATH?")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("tmux {}: {}", args.join(" "), stderr.trim()));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// Query all sessions with their windows. A missing tmux *server* (no
+/// sessions exist) is reported by tmux as an error; we treat that as an
+/// empty list so the UI shows its empty state rather than crashing.
+pub fn sessions(runner: &impl CommandRunner) -> Result<Vec<Session>> {
+    let sessions_out = match runner.run(&["list-sessions", "-F", SESSION_FORMAT]) {
+        Ok(out) => out,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("no server running") || msg.contains("no sessions") {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+    };
+    let windows_out = runner.run(&["list-windows", "-a", "-F", WINDOW_FORMAT])?;
+    Ok(build_sessions(&sessions_out, &windows_out))
+}
+
+/// Kill a session by name.
+pub fn kill(runner: &impl CommandRunner, name: &str) -> Result<()> {
+    runner.run(&["kill-session", "-t", name])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    struct MockRunner {
+        sessions_out: String,
+        windows_out: String,
+        fail_no_server: bool,
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl MockRunner {
+        fn new(sessions_out: &str, windows_out: &str) -> Self {
+            Self {
+                sessions_out: sessions_out.to_string(),
+                windows_out: windows_out.to_string(),
+                fail_no_server: false,
+                calls: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl CommandRunner for MockRunner {
+        fn run(&self, args: &[&str]) -> anyhow::Result<String> {
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|s| s.to_string()).collect());
+            match args.first().copied() {
+                Some("list-sessions") if self.fail_no_server => {
+                    Err(anyhow::anyhow!("no server running on /tmp/tmux-501/default"))
+                }
+                Some("list-sessions") => Ok(self.sessions_out.clone()),
+                Some("list-windows") => Ok(self.windows_out.clone()),
+                Some("kill-session") => Ok(String::new()),
+                _ => Ok(String::new()),
+            }
+        }
+    }
+
+    #[test]
+    fn sessions_parses_via_runner() {
+        let runner = MockRunner::new("work\t1\n", "work\t0\tshell\t1\tzsh\n");
+        let got = sessions(&runner).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].name, "work");
+        assert_eq!(got[0].windows[0].current_command, "zsh");
+    }
+
+    #[test]
+    fn sessions_returns_empty_when_no_server() {
+        let mut runner = MockRunner::new("", "");
+        runner.fail_no_server = true;
+        assert_eq!(sessions(&runner).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn kill_invokes_kill_session_with_target() {
+        let runner = MockRunner::new("", "");
+        kill(&runner, "work").unwrap();
+        let calls = runner.calls.borrow();
+        assert_eq!(calls[0], vec!["kill-session", "-t", "work"]);
+    }
 
     #[test]
     fn build_sessions_assembles_and_sorts_windows() {
