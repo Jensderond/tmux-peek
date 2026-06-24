@@ -1,6 +1,7 @@
 //! All interaction with the `tmux` binary, plus pure parsing of its output.
 
 use anyhow::{anyhow, Context, Result};
+use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,48 @@ pub fn kill(runner: &impl CommandRunner, name: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachMode {
+    /// Not currently inside tmux ($TMUX unset).
+    Outside,
+    /// Already inside a tmux client ($TMUX set).
+    Inside,
+}
+
+fn attach_mode_from(tmux_var: Option<std::ffi::OsString>) -> AttachMode {
+    match tmux_var {
+        Some(v) if !v.is_empty() => AttachMode::Inside,
+        _ => AttachMode::Outside,
+    }
+}
+
+/// Determine attach mode from the live environment.
+pub fn attach_mode() -> AttachMode {
+    attach_mode_from(std::env::var_os("TMUX"))
+}
+
+/// Hand the terminal over to tmux. The caller MUST restore the terminal
+/// (leave raw mode / alternate screen) before calling this.
+pub fn attach(name: &str, mode: AttachMode) -> Result<()> {
+    match mode {
+        AttachMode::Outside => {
+            // Replaces the current process; only returns on failure.
+            let err = Command::new("tmux").args(["attach", "-t", name]).exec();
+            Err(anyhow!("failed to exec `tmux attach -t {name}`: {err}"))
+        }
+        AttachMode::Inside => {
+            let status = Command::new("tmux")
+                .args(["switch-client", "-t", name])
+                .status()
+                .context("failed to run `tmux switch-client`")?;
+            if !status.success() {
+                return Err(anyhow!("tmux switch-client -t {name} failed"));
+            }
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +261,21 @@ play\t0\tbuild\t1\tcargo
         let got = build_sessions("work\t0\n", "ghost\t0\tx\t1\tzsh\n");
         assert_eq!(got.len(), 1);
         assert!(got[0].windows.is_empty());
+    }
+
+    use std::ffi::OsString;
+
+    #[test]
+    fn attach_mode_inside_when_tmux_set() {
+        assert_eq!(
+            attach_mode_from(Some(OsString::from("/tmp/tmux-501/default,123,0"))),
+            AttachMode::Inside
+        );
+    }
+
+    #[test]
+    fn attach_mode_outside_when_unset_or_empty() {
+        assert_eq!(attach_mode_from(None), AttachMode::Outside);
+        assert_eq!(attach_mode_from(Some(OsString::new())), AttachMode::Outside);
     }
 }
