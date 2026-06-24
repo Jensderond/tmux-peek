@@ -13,7 +13,7 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-use app::{App, Mode};
+use app::{App, Mode, PanePreview};
 use tmux::TmuxCli;
 
 /// What the event loop decided to do after it ends.
@@ -46,11 +46,34 @@ fn refresh(app: &mut App, runner: &impl tmux::CommandRunner) {
     }
 }
 
+/// Snapshot the captured content of every window in the selected session,
+/// one `PanePreview` per window. No selected session → empty preview.
+fn update_preview(app: &mut App, runner: &impl tmux::CommandRunner) {
+    let previews = match app.selected_session() {
+        Some(session) => session
+            .windows
+            .iter()
+            .map(|window| {
+                let target = format!("{}:{}", session.name, window.index);
+                let content = tmux::capture_pane(runner, &target)
+                    .unwrap_or_else(|_| "(unavailable)".to_string());
+                PanePreview {
+                    title: format!("{}:{}", window.index, window.name),
+                    content,
+                }
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    app.set_preview(previews);
+}
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
     runner: &impl tmux::CommandRunner,
 ) -> Result<Outcome> {
+    update_preview(app, runner);
     loop {
         terminal.draw(|frame| ui::render(app, frame))?;
 
@@ -61,14 +84,41 @@ fn run(
             continue;
         }
 
-        let confirming = matches!(app.mode, Mode::ConfirmKill { .. });
-        if confirming {
-            match key.code {
+        match &app.mode {
+            Mode::Filtering => match key.code {
+                KeyCode::Esc => {
+                    app.clear_filter();
+                    update_preview(app, runner);
+                }
+                KeyCode::Enter => {
+                    app.confirm_filter();
+                    update_preview(app, runner);
+                }
+                KeyCode::Backspace => {
+                    app.filter_backspace();
+                    update_preview(app, runner);
+                }
+                KeyCode::Down => {
+                    app.select_next();
+                    update_preview(app, runner);
+                }
+                KeyCode::Up => {
+                    app.select_prev();
+                    update_preview(app, runner);
+                }
+                KeyCode::Char(c) => {
+                    app.filter_push(c);
+                    update_preview(app, runner);
+                }
+                _ => {}
+            },
+            Mode::ConfirmKill { .. } => match key.code {
                 KeyCode::Char('y') => {
                     if let Some(name) = app.confirm_kill() {
                         match tmux::kill(runner, &name) {
                             Ok(()) => {
                                 refresh(app, runner);
+                                update_preview(app, runner);
                                 app.set_status(format!("killed \"{name}\""));
                             }
                             Err(e) => app.set_status(format!("kill failed: {e}")),
@@ -77,22 +127,32 @@ fn run(
                 }
                 KeyCode::Char('n') | KeyCode::Esc => app.cancel(),
                 _ => {}
-            }
-        } else {
-            app.status = None;
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(Outcome::Quit),
-                KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
-                KeyCode::Tab | KeyCode::Char(' ') => app.toggle_expand(),
-                KeyCode::Enter => {
-                    if let Some(session) = app.selected_session() {
-                        return Ok(Outcome::Attach(session.name.clone()));
+            },
+            Mode::Browsing => {
+                app.clear_status();
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(Outcome::Quit),
+                    KeyCode::Char('/') => app.start_filter(),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        app.select_next();
+                        update_preview(app, runner);
                     }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        app.select_prev();
+                        update_preview(app, runner);
+                    }
+                    KeyCode::Enter => {
+                        if let Some(session) = app.selected_session() {
+                            return Ok(Outcome::Attach(session.name.clone()));
+                        }
+                    }
+                    KeyCode::Char('x') => app.request_kill(),
+                    KeyCode::Char('r') => {
+                        refresh(app, runner);
+                        update_preview(app, runner);
+                    }
+                    _ => {}
                 }
-                KeyCode::Char('x') => app.request_kill(),
-                KeyCode::Char('r') => refresh(app, runner),
-                _ => {}
             }
         }
     }

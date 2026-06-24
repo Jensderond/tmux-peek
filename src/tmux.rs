@@ -1,6 +1,6 @@
 //! All interaction with the `tmux` binary, plus pure parsing of its output.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -52,7 +52,11 @@ pub fn build_sessions(sessions_out: &str, windows_out: &str) -> Vec<Session> {
         .lines()
         .filter(|l| !l.is_empty())
         .filter_map(parse_session_line)
-        .map(|(name, attached)| Session { name, windows: Vec::new(), attached })
+        .map(|(name, attached)| Session {
+            name,
+            windows: Vec::new(),
+            attached,
+        })
         .collect();
 
     for line in windows_out.lines().filter(|l| !l.is_empty()) {
@@ -114,6 +118,13 @@ pub fn sessions(runner: &impl CommandRunner) -> Result<Vec<Session>> {
 pub fn kill(runner: &impl CommandRunner, name: &str) -> Result<()> {
     runner.run(&["kill-session", "-t", name])?;
     Ok(())
+}
+
+/// Capture the visible content of a target's active pane as plain text.
+/// `target` is `<session>:<window_index>`, which resolves to that window's
+/// active pane.
+pub fn capture_pane(runner: &impl CommandRunner, target: &str) -> Result<String> {
+    runner.run(&["capture-pane", "-p", "-t", target])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,12 +198,13 @@ mod tests {
                 .borrow_mut()
                 .push(args.iter().map(|s| s.to_string()).collect());
             match args.first().copied() {
-                Some("list-sessions") if self.fail_no_server => {
-                    Err(anyhow::anyhow!("no server running on /tmp/tmux-501/default"))
-                }
+                Some("list-sessions") if self.fail_no_server => Err(anyhow::anyhow!(
+                    "no server running on /tmp/tmux-501/default"
+                )),
                 Some("list-sessions") => Ok(self.sessions_out.clone()),
                 Some("list-windows") => Ok(self.windows_out.clone()),
                 Some("kill-session") => Ok(String::new()),
+                Some("capture-pane") => Ok("captured content".to_string()),
                 _ => Ok(String::new()),
             }
         }
@@ -220,6 +232,15 @@ mod tests {
         kill(&runner, "work").unwrap();
         let calls = runner.calls.borrow();
         assert_eq!(calls[0], vec!["kill-session", "-t", "work"]);
+    }
+
+    #[test]
+    fn capture_pane_issues_capture_with_target() {
+        let runner = MockRunner::new("", "");
+        let out = capture_pane(&runner, "work:0").unwrap();
+        assert_eq!(out, "captured content");
+        let calls = runner.calls.borrow();
+        assert_eq!(calls[0], vec!["capture-pane", "-p", "-t", "work:0"]);
     }
 
     #[test]
