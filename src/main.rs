@@ -79,6 +79,7 @@ fn run(
                 _ => {}
             }
         } else {
+            app.status = None;
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(Outcome::Quit),
                 KeyCode::Down | KeyCode::Char('j') => app.select_next(),
