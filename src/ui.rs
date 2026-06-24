@@ -1,9 +1,10 @@
 //! Renders `&App` into a ratatui frame. Holds no state.
 
+use ansi_to_tui::IntoText;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::app::{App, Mode};
@@ -100,9 +101,18 @@ fn render_preview(app: &App, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .title(preview.title.clone())
             .borders(Borders::ALL);
-        let para = Paragraph::new(preview.content.clone()).block(block);
+        let para = Paragraph::new(ansi_text(&preview.content)).block(block);
         frame.render_widget(para, *cell);
     }
+}
+
+/// Parse `capture-pane -e` output (text with ANSI escape sequences) into
+/// styled ratatui text so the preview keeps tmux's colors. Falls back to the
+/// raw string as plain text if the escape sequences can't be parsed.
+fn ansi_text(content: &str) -> Text<'static> {
+    content
+        .into_text()
+        .unwrap_or_else(|_| Text::raw(content.to_string()))
 }
 
 fn render_footer(app: &App, frame: &mut Frame, area: Rect) {
@@ -221,6 +231,22 @@ mod tests {
         assert!(text.contains("nvim running"), "got:\n{text}");
         assert!(text.contains("1:server"), "got:\n{text}");
         assert!(text.contains("cargo run"), "got:\n{text}");
+    }
+
+    #[test]
+    fn preview_interprets_ansi_color_codes_instead_of_dumping_them() {
+        let mut app = App::new(vec![session_with_window()]);
+        app.set_preview(vec![PanePreview {
+            title: "0:editor".to_string(),
+            // Red "ERR" then a reset, as `capture-pane -e` would produce.
+            content: "\x1b[31mERRTOKEN\x1b[0m ok".to_string(),
+        }]);
+        let text = render_to_string(&app);
+        assert!(text.contains("ERRTOKEN"), "visible text missing in:\n{text}");
+        assert!(
+            !text.contains("[31m"),
+            "raw ANSI code leaked into output:\n{text}"
+        );
     }
 
     #[test]

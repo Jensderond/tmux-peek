@@ -91,8 +91,13 @@ fn run(
                     update_preview(app, runner);
                 }
                 KeyCode::Enter => {
+                    // Enter while filtering attaches straight to the
+                    // highlighted match — no separate "confirm filter" step.
+                    // With no matches, just leave filtering so hints return.
+                    if let Some(session) = app.selected_session() {
+                        return Ok(Outcome::Attach(session.name.clone()));
+                    }
                     app.confirm_filter();
-                    update_preview(app, runner);
                 }
                 KeyCode::Backspace => {
                     app.filter_backspace();

@@ -120,11 +120,12 @@ pub fn kill(runner: &impl CommandRunner, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Capture the visible content of a target's active pane as plain text.
+/// Capture the visible content of a target's active pane, preserving colors.
 /// `target` is `<session>:<window_index>`, which resolves to that window's
-/// active pane.
+/// active pane. `-e` keeps ANSI escape sequences so the preview renders with
+/// the same colors tmux would show (parsed back into styled text by the UI).
 pub fn capture_pane(runner: &impl CommandRunner, target: &str) -> Result<String> {
-    runner.run(&["capture-pane", "-p", "-t", target])
+    runner.run(&["capture-pane", "-p", "-e", "-t", target])
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +241,9 @@ mod tests {
         let out = capture_pane(&runner, "work:0").unwrap();
         assert_eq!(out, "captured content");
         let calls = runner.calls.borrow();
-        assert_eq!(calls[0], vec!["capture-pane", "-p", "-t", "work:0"]);
+        // `-e` makes tmux emit ANSI escape sequences so the preview keeps
+        // its colors instead of being flattened to plain text.
+        assert_eq!(calls[0], vec!["capture-pane", "-p", "-e", "-t", "work:0"]);
     }
 
     #[test]
