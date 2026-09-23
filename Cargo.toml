@@ -1,6 +1,6 @@
 [package]
 name = "tmux-peek"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Peek at your running tmux sessions from outside tmux, with colored window previews, and attach."
 repository = "https://github.com/jensderond/tmux-peek"
@@ -8,6 +8,7 @@ license = "MIT"
 readme = "README.md"
 keywords = ["tmux", "tui", "terminal", "ratatui", "sessions"]
 categories = ["command-line-utilities"]
+exclude = ["docs/"]
 
 [dependencies]
 ansi-to-tui = "8.0.1"

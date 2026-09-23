@@ -22,7 +22,7 @@ tmux-peek
 
 | Key       | Action            |
 | --------- | ----------------- |
-| `↑` / `↓` | Move selection    |
+| `↑` / `↓`, `k` / `j` | Move selection |
 | `0`–`9`, `a`–`z` | Attach to the session with that label |
 | `/`       | Filter sessions   |
 | `Enter`   | Attach to session |
