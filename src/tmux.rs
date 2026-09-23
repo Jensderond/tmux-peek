@@ -128,6 +128,60 @@ pub fn capture_pane(runner: &impl CommandRunner, target: &str) -> Result<String>
     runner.run(&["capture-pane", "-p", "-e", "-t", target])
 }
 
+/// Line printed before each pane in a batched capture, so the combined
+/// output can be split back per target. Plain ASCII on purpose: tmux escapes
+/// control characters in `display-message` output.
+const CAPTURE_MARKER: &str = "@@tmux-peek-pane@@";
+
+/// Capture several targets (same semantics as `capture_pane`) in a single
+/// tmux invocation by chaining commands with `;`. Spawning tmux dominates
+/// the cost, so one call for all of a session's windows is several times
+/// faster than one call per window. If any target fails, tmux aborts the
+/// chain and the whole call errors.
+pub fn capture_panes(runner: &impl CommandRunner, targets: &[String]) -> Result<Vec<String>> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args: Vec<&str> = Vec::new();
+    for (i, target) in targets.iter().enumerate() {
+        if i > 0 {
+            args.push(";");
+        }
+        args.extend(["display-message", "-p", CAPTURE_MARKER, ";"]);
+        args.extend(["capture-pane", "-p", "-e", "-t", target]);
+    }
+    let out = runner.run(&args)?;
+    split_captures(&out, targets.len())
+}
+
+/// Split batched capture output into one string per pane, each exactly as a
+/// lone `capture_pane` would have returned it.
+fn split_captures(out: &str, expected: usize) -> Result<Vec<String>> {
+    let marker_line = format!("{CAPTURE_MARKER}\n");
+    // Only a marker at the start of a line counts, so pane text that merely
+    // contains the marker mid-line doesn't split a capture.
+    let starts: Vec<usize> = out
+        .match_indices(&marker_line)
+        .map(|(i, _)| i)
+        .filter(|&i| i == 0 || out.as_bytes()[i - 1] == b'\n')
+        .collect();
+    let chunks: Vec<String> = starts
+        .iter()
+        .enumerate()
+        .map(|(n, &start)| {
+            let end = starts.get(n + 1).copied().unwrap_or(out.len());
+            out[start + marker_line.len()..end].to_string()
+        })
+        .collect();
+    if chunks.len() != expected {
+        return Err(anyhow!(
+            "batched capture returned {} panes, expected {expected}",
+            chunks.len()
+        ));
+    }
+    Ok(chunks)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachMode {
     /// Not currently inside tmux ($TMUX unset).
@@ -198,14 +252,27 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(args.iter().map(|s| s.to_string()).collect());
-            match args.first().copied() {
+            // Like tmux, a lone ";" argument separates chained commands;
+            // their outputs are concatenated in order.
+            let mut out = String::new();
+            for cmd in args.split(|a| *a == ";") {
+                out.push_str(&self.respond(cmd)?);
+            }
+            Ok(out)
+        }
+    }
+
+    impl MockRunner {
+        fn respond(&self, cmd: &[&str]) -> anyhow::Result<String> {
+            match cmd.first().copied() {
                 Some("list-sessions") if self.fail_no_server => Err(anyhow::anyhow!(
                     "no server running on /tmp/tmux-501/default"
                 )),
                 Some("list-sessions") => Ok(self.sessions_out.clone()),
                 Some("list-windows") => Ok(self.windows_out.clone()),
                 Some("kill-session") => Ok(String::new()),
-                Some("capture-pane") => Ok("captured content".to_string()),
+                Some("display-message") => Ok(format!("{}\n", cmd.last().unwrap())),
+                Some("capture-pane") => Ok(format!("captured {}\n", cmd.last().unwrap())),
                 _ => Ok(String::new()),
             }
         }
@@ -239,11 +306,68 @@ mod tests {
     fn capture_pane_issues_capture_with_target() {
         let runner = MockRunner::new("", "");
         let out = capture_pane(&runner, "work:0").unwrap();
-        assert_eq!(out, "captured content");
+        assert_eq!(out, "captured work:0\n");
         let calls = runner.calls.borrow();
         // `-e` makes tmux emit ANSI escape sequences so the preview keeps
         // its colors instead of being flattened to plain text.
         assert_eq!(calls[0], vec!["capture-pane", "-p", "-e", "-t", "work:0"]);
+    }
+
+    #[test]
+    fn capture_panes_batches_all_targets_into_one_call() {
+        let runner = MockRunner::new("", "");
+        let targets = ["work:0".to_string(), "work:2".to_string()];
+        let out = capture_panes(&runner, &targets).unwrap();
+        assert_eq!(out, vec!["captured work:0\n", "captured work:2\n"]);
+        let calls = runner.calls.borrow();
+        assert_eq!(calls.len(), 1, "expected a single tmux invocation");
+        assert_eq!(
+            calls[0],
+            vec![
+                "display-message",
+                "-p",
+                CAPTURE_MARKER,
+                ";",
+                "capture-pane",
+                "-p",
+                "-e",
+                "-t",
+                "work:0",
+                ";",
+                "display-message",
+                "-p",
+                CAPTURE_MARKER,
+                ";",
+                "capture-pane",
+                "-p",
+                "-e",
+                "-t",
+                "work:2",
+            ]
+        );
+    }
+
+    #[test]
+    fn capture_panes_with_no_targets_runs_nothing() {
+        let runner = MockRunner::new("", "");
+        assert_eq!(capture_panes(&runner, &[]).unwrap(), Vec::<String>::new());
+        assert!(runner.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn split_captures_ignores_marker_mid_line() {
+        let out = format!("{CAPTURE_MARKER}\nsee {CAPTURE_MARKER}\nok\n{CAPTURE_MARKER}\nb\n");
+        let got = split_captures(&out, 2).unwrap();
+        assert_eq!(
+            got,
+            vec![format!("see {CAPTURE_MARKER}\nok\n"), "b\n".to_string()]
+        );
+    }
+
+    #[test]
+    fn split_captures_rejects_wrong_chunk_count() {
+        let out = format!("{CAPTURE_MARKER}\nonly one\n");
+        assert!(split_captures(&out, 2).is_err());
     }
 
     #[test]
