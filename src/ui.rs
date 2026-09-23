@@ -7,9 +7,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, shortcut_label};
 
-const HINTS: &str = "↑/↓ move · / filter · Enter attach · x kill · r refresh · q quit";
+const HINTS: &str = "↑/↓ move · 0-9/a-z pick · / filter · Enter attach · x kill · r refresh · q quit";
 
 pub fn render(app: &App, frame: &mut Frame) {
     let chunks = Layout::default()
@@ -62,13 +62,21 @@ fn render_list(app: &App, frame: &mut Frame, area: Rect) {
         return;
     }
 
+    // Quick-select keys only work while browsing; while filtering they type
+    // into the query, so the labels are blanked (keeping names aligned).
+    let show_labels = app.mode != Mode::Filtering;
+
     let mut lines: Vec<Line> = Vec::new();
     for (i, session) in visible.iter().enumerate() {
         let selected = i == app.selected;
         let marker = if selected { ">" } else { " " };
+        let label = match shortcut_label(i) {
+            Some(key) if show_labels => format!("({key})"),
+            _ => "   ".to_string(),
+        };
         let attached = if session.attached { " *" } else { "" };
         let row = format!(
-            "{marker} {} [{} win]{attached}",
+            "{marker} {label} {} [{} win]{attached}",
             session.name,
             session.windows.len()
         );
@@ -274,6 +282,23 @@ mod tests {
         app.filter = "zzz".to_string();
         let text = render_to_string(&app);
         assert!(text.contains("No sessions match /zzz"), "got:\n{text}");
+    }
+
+    #[test]
+    fn rows_are_prefixed_with_shortcut_labels() {
+        let app = App::new(vec![sess("alpha"), sess("beta")]);
+        let text = render_to_string(&app);
+        assert!(text.contains("(0) alpha"), "got:\n{text}");
+        assert!(text.contains("(1) beta"), "got:\n{text}");
+    }
+
+    #[test]
+    fn shortcut_labels_hidden_while_filtering() {
+        let mut app = App::new(vec![sess("alpha")]);
+        app.start_filter();
+        let text = render_to_string(&app);
+        assert!(!text.contains("(0)"), "got:\n{text}");
+        assert!(text.contains("alpha"), "got:\n{text}");
     }
 
     #[test]

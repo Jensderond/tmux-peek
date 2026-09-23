@@ -156,6 +156,11 @@ fn run(
                         refresh(app, runner);
                         update_preview(app, runner);
                     }
+                    KeyCode::Char(c) => {
+                        if let Some(session) = app.shortcut_session(c) {
+                            return Ok(Outcome::Attach(session.name.clone()));
+                        }
+                    }
                     _ => {}
                 }
             }

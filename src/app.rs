@@ -16,6 +16,16 @@ pub struct PanePreview {
     pub content: String,
 }
 
+/// Quick-select keys, assigned to visible sessions top to bottom: digits
+/// first, then letters not already bound in browsing mode (j, k, q, r, x).
+const SHORTCUT_KEYS: &[u8] = b"0123456789abcdefghilmnopstuvwyz";
+
+/// The quick-select key for the session at `index` in the visible list, or
+/// `None` once the keys run out.
+pub fn shortcut_label(index: usize) -> Option<char> {
+    SHORTCUT_KEYS.get(index).map(|&b| b as char)
+}
+
 pub struct App {
     pub sessions: Vec<Session>,
     pub selected: usize,
@@ -52,6 +62,12 @@ impl App {
 
     pub fn selected_session(&self) -> Option<&Session> {
         self.visible_sessions().get(self.selected).copied()
+    }
+
+    /// The visible session labelled with quick-select key `key`, if any.
+    pub fn shortcut_session(&self, key: char) -> Option<&Session> {
+        let index = SHORTCUT_KEYS.iter().position(|&b| b as char == key)?;
+        self.visible_sessions().get(index).copied()
     }
 
     pub fn select_next(&mut self) {
@@ -328,6 +344,35 @@ mod tests {
         assert_eq!(app.mode, Mode::Browsing);
         assert_eq!(app.filter, "");
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn shortcut_labels_digits_then_unbound_letters() {
+        assert_eq!(shortcut_label(0), Some('0'));
+        assert_eq!(shortcut_label(9), Some('9'));
+        assert_eq!(shortcut_label(10), Some('a'));
+        // Browsing keys (j, k, q, r, x) are never used as labels.
+        let labels: Vec<char> = (0..).map_while(shortcut_label).collect();
+        for bound in ['j', 'k', 'q', 'r', 'x'] {
+            assert!(!labels.contains(&bound), "{bound} must not be a label");
+        }
+        assert_eq!(shortcut_label(labels.len()), None);
+    }
+
+    #[test]
+    fn shortcut_session_picks_by_label() {
+        let app = app3();
+        assert_eq!(app.shortcut_session('0').unwrap().name, "a");
+        assert_eq!(app.shortcut_session('2').unwrap().name, "c");
+        assert!(app.shortcut_session('3').is_none());
+        assert!(app.shortcut_session('j').is_none());
+    }
+
+    #[test]
+    fn shortcut_session_indexes_visible_list() {
+        let mut app = App::new(vec![sess("web-app"), sess("db"), sess("web-api")]);
+        app.filter = "web".to_string();
+        assert_eq!(app.shortcut_session('1').unwrap().name, "web-api");
     }
 
     #[test]

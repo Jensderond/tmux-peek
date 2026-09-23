@@ -23,6 +23,7 @@ tmux-peek
 | Key       | Action            |
 | --------- | ----------------- |
 | `↑` / `↓` | Move selection    |
+| `0`–`9`, `a`–`z` | Attach to the session with that label |
 | `/`       | Filter sessions   |
 | `Enter`   | Attach to session |
 | `x`       | Kill session      |
