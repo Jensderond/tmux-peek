@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -21,6 +21,27 @@ use tmux::TmuxCli;
 enum Outcome {
     Quit,
     Attach(String),
+}
+
+/// A Ctrl+letter chord, handled before any mode-specific keys.
+enum Chord {
+    Quit,
+    Ignore,
+}
+
+/// Raw mode delivers Ctrl+C as a key rather than SIGINT, so it quits from
+/// any mode. Every other Ctrl+letter is ignored: terminals report them as the
+/// plain letter plus CONTROL, which would otherwise trigger that letter's
+/// action (Ctrl+X killing, Ctrl+A attaching, ...). `None` means no chord.
+fn ctrl_chord(key: &KeyEvent) -> Option<Chord> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('c') => Some(Chord::Quit),
+        KeyCode::Char(_) => Some(Chord::Ignore),
+        _ => None,
+    }
 }
 
 /// Restores the terminal on drop — covers normal exit, early return, and panic.
@@ -104,6 +125,11 @@ fn run(
         };
         if key.kind != KeyEventKind::Press {
             continue;
+        }
+        match ctrl_chord(&key) {
+            Some(Chord::Quit) => return Ok(Outcome::Quit),
+            Some(Chord::Ignore) => continue,
+            None => {}
         }
 
         match &app.mode {
@@ -211,4 +237,37 @@ fn main() -> Result<()> {
         Outcome::Attach(name) => tmux::attach(&name, mode)?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn ctrl_c_quits() {
+        let got = ctrl_chord(&key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(got, Some(Chord::Quit)));
+    }
+
+    #[test]
+    fn other_ctrl_letters_are_ignored() {
+        // Ctrl+X must not act like `x` (kill), Ctrl+J like `j` (down), etc.
+        for c in ['x', 'j', 'k', 'r', 'q', 'a'] {
+            let got = ctrl_chord(&key(KeyCode::Char(c), KeyModifiers::CONTROL));
+            assert!(matches!(got, Some(Chord::Ignore)), "ctrl+{c}");
+        }
+    }
+
+    #[test]
+    fn plain_keys_pass_through() {
+        assert!(ctrl_chord(&key(KeyCode::Char('c'), KeyModifiers::NONE)).is_none());
+        assert!(ctrl_chord(&key(KeyCode::Char('C'), KeyModifiers::SHIFT)).is_none());
+        assert!(ctrl_chord(&key(KeyCode::Enter, KeyModifiers::NONE)).is_none());
+        assert!(ctrl_chord(&key(KeyCode::Backspace, KeyModifiers::NONE)).is_none());
+    }
 }
