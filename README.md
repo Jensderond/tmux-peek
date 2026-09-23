@@ -28,7 +28,7 @@ tmux-peek
 | `Enter`   | Attach to session |
 | `x`       | Kill session      |
 | `r`       | Refresh           |
-| `q`       | Quit              |
+| `q`, `Ctrl+C` | Quit          |
 
 ## License
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — 2026-09-23
+
+### Fixed
+
+- `Ctrl+C` now quits from any mode instead of being ignored
+- Other `Ctrl`+letter combinations no longer trigger the plain letter's action (e.g. `Ctrl+X` asking to kill, `Ctrl+A` attaching)
+
 ## 0.2.0 — 2026-09-23
 
 ### Added
